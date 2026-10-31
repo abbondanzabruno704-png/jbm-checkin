@@ -171,7 +171,7 @@ window.addEventListener('offline',()=>notify('Connessione assente. Nessun imbarc
 
 function viewport(){document.documentElement.style.setProperty('--app-height',Math.round(window.visualViewport?.height||innerHeight)+'px');}
 window.visualViewport?.addEventListener('resize',viewport);window.addEventListener('resize',viewport);viewport();
-$('environment').textContent=window.JBM_CONFIG?.environment==='TEST'?'ARCHIVIO DI PROVA':'';
+$('environment').textContent='';show('environment',false);
 
 // Zebra/DataWedge keyboard output: suffix Enter, outside editable controls.
 let wedge='',wedgeAt=0;
