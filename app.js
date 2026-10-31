@@ -20,7 +20,7 @@ async function api(action,params={}){
   }catch(e){if(e.name==='AbortError'||e instanceof TypeError)throw Error('Risposta non ricevuta. L’operazione potrebbe essere stata registrata: aggiorna i dati prima di riprovare.');throw e;}
   finally{clearTimeout(timeout);}
 }
-async function guarded(fn){if(state.busy)return;state.busy=true;const controls=[...document.querySelectorAll('button,input,select')];const previous=controls.map(e=>e.disabled);controls.forEach(e=>e.disabled=true);try{await fn();}catch(e){notify(e.message);}finally{controls.forEach((e,i)=>e.disabled=previous[i]);state.busy=false;}}
+async function guarded(fn){if(state.busy)return;state.busy=true;const controls=[...document.querySelectorAll('button,input,select')];const previous=controls.map(e=>e.disabled);controls.forEach(e=>e.disabled=true);try{await fn();}catch(e){notify(e?.message||String(e));}finally{controls.forEach((e,i)=>e.disabled=previous[i]);state.busy=false;}}
 function sound(ok){try{audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume();const o=audio.createOscillator(),g=audio.createGain();o.connect(g);g.connect(audio.destination);g.gain.value=.1;o.frequency.value=ok?1100:350;o.start();o.stop(audio.currentTime+.2);}catch(e){}}
 function el(tag,text,className){const e=document.createElement(tag);if(text!=null)e.textContent=text;if(className)e.className=className;return e;}
 async function reset(){await stopCamera();Object.assign(state,{token:'',operator:'',trip:null,port:'',snapshot:null,undo:null,closeId:''});show('workspace',false);show('login');show('operation',false);show('setup');show('history',false);$('password').value='';$('passengers').replaceChildren();$('historyContent').replaceChildren();show('result',false);}
@@ -40,10 +40,70 @@ $('search').oninput=renderList;$('listState').onchange=renderList;
 function reportTable(stats){const table=el('table'),head=el('tr');['Stato','Adulti','Bambini','Infant','Totale'].forEach(s=>head.append(el('th',s)));table.append(head);for(const k of ['totale','imbarcati','mancanti','annullati']){const tr=el('tr');[k,...stats.counts[k],stats[k]].forEach(s=>tr.append(el('td',s)));table.append(tr);}return table;}
 function renderReport(){if(!state.snapshot)return;$('reportContent').replaceChildren(el('p',dateLabel(state.trip.date)+' · '+state.trip.corsa+' · '+state.port),reportTable(state.snapshot));for(const [op,pax]of Object.entries(state.snapshot.operatori))$('reportContent').append(el('p',op+': '+pax+' pax'));}
 $('print').onclick=()=>window.print();
-async function stopCamera(){if(state.cameraOn){state.cameraOn=false;try{await state.camera.stop();}catch(e){} }show('camera');show('cameraStop',false);show('torch',false);}
-$('camera').onclick=()=>guarded(async()=>{if(!window.Html5Qrcode)throw Error('Libreria scanner non disponibile. Usa il lettore o il codice manuale.');state.camera=state.camera||new Html5Qrcode('reader');await state.camera.start({facingMode:'environment'},{fps:10,qrbox:(w,h)=>({width:Math.min(w,h,260)*.8,height:Math.min(w,h,260)*.8})},code=>{if(!state.busy&&!state.scanHold&&state.view==='scan')scan(code);},()=>{});state.cameraOn=true;show('camera',false);show('cameraStop');const caps=state.camera.getRunningTrackCapabilities();show('torch',!!caps.torch);});
-$('cameraStop').onclick=()=>guarded(stopCamera);let torch=false;
-$('torch').onclick=()=>guarded(async()=>{torch=!torch;await state.camera.applyVideoConstraints({advanced:[{torch}]});});
+// Camera patch 1.1: visible container before construction and serialized lifecycle.
+let cameraQueue=Promise.resolve(),cameraGeneration=0,torch=false;
+const cameraStatus=document.createElement('p');
+cameraStatus.className='muted small';
+cameraStatus.setAttribute('role','status');
+$('reader').before(cameraStatus);
+function cameraTask(task){const next=cameraQueue.then(task);cameraQueue=next.catch(()=>{});return next;}
+function cameraMessage(e){
+  const text=String(e?.message||e||'Errore fotocamera');
+  if(/NotAllowed|PermissionDenied|permission denied/i.test(text))return 'Accesso alla fotocamera negato. Consenti la fotocamera nelle impostazioni del sito.';
+  if(/NotFound|DevicesNotFound/i.test(text))return 'Nessuna fotocamera disponibile su questo dispositivo.';
+  if(/NotReadable|TrackStart|Could not start/i.test(text))return 'Fotocamera occupata. Chiudi le altre app o schede che la utilizzano e riprova.';
+  return 'Fotocamera: '+text;
+}
+async function releaseCamera(){
+  const camera=state.camera;
+  if(camera){
+    if(state.cameraOn||camera.isScanning)await camera.stop();
+    camera.clear();
+  }
+  state.camera=null;state.cameraOn=false;torch=false;
+  $('reader').replaceChildren();$('reader').style.display='none';
+  show('camera');show('cameraStop',false);show('torch',false);
+}
+function stopCamera(){
+  cameraGeneration++;
+  return cameraTask(async()=>{await releaseCamera();cameraStatus.textContent='Fotocamera ferma · scanner 1.1';});
+}
+function startCamera(){
+  const generation=++cameraGeneration;
+  return cameraTask(async()=>{
+    if(document.hidden||generation!==cameraGeneration)return;
+    if(!window.Html5Qrcode)throw Error('Libreria scanner non disponibile. Ricarica la pagina e riprova.');
+    await releaseCamera();
+    const reader=$('reader');
+    // Override the old #reader:empty rule before the scanner measures its width.
+    reader.style.display='block';reader.style.width='100%';reader.style.minHeight='240px';reader.style.background='#092d3c';
+    $('code').blur();
+    cameraStatus.textContent='Avvio fotocamera… · scanner 1.1';
+    reader.scrollIntoView({block:'center',behavior:'smooth'});
+    const camera=new Html5Qrcode('reader');state.camera=camera;
+    try{
+      // No fixed crop: scan the complete video, including small/rotated viewports.
+      await camera.start({facingMode:'environment'},{fps:10},code=>{
+        if(generation===cameraGeneration&&state.cameraOn&&!state.busy&&!state.scanHold&&state.view==='scan'&&!document.hidden)scan(code);
+      },()=>{});
+      state.cameraOn=true;
+      if(generation!==cameraGeneration||document.hidden){await releaseCamera();return;}
+      const video=reader.querySelector('video');
+      if(video){video.setAttribute('playsinline','');video.setAttribute('webkit-playsinline','');video.muted=true;video.style.display='block';video.style.width='100%';video.style.height='auto';}
+      show('camera',false);show('cameraStop');
+      // Optional capability detection must never interrupt a working video stream.
+      try{const caps=camera.getRunningTrackCapabilities();show('torch',Boolean(caps?.torch));}catch(e){show('torch',false);}
+      cameraStatus.textContent='Fotocamera attiva · inquadra il QR · scanner 1.1';
+    }catch(e){
+      try{await releaseCamera();}catch(cleanupError){show('cameraStop');}
+      cameraStatus.textContent=cameraMessage(e);
+      throw Error(cameraMessage(e));
+    }
+  });
+}
+$('camera').onclick=()=>guarded(startCamera);
+$('cameraStop').onclick=()=>guarded(stopCamera);
+$('torch').onclick=()=>guarded(()=>cameraTask(async()=>{if(!state.cameraOn)return;const next=!torch;await state.camera.applyVideoConstraints({advanced:[{torch:next}]});torch=next;}));
 function scan(code){guarded(async()=>{state.scanHold=true;show('result');$('result').className='';$('result').textContent='Verifica in corso…';try{const d=await api('checkin',{code});$('result').className=d.esito==='VALIDO'?'':d.esito==='GIA_USATO'?'warn':'error';$('result').textContent=(labels[d.esito]||d.esito)+(d.ticket?'\n'+d.nome+' '+d.cognome+'\nTicket '+d.ticket+' · '+d.pax+' pax\n'+d.port:'');sound(d.esito==='VALIDO');await refresh();}catch(e){$('result').className='warn';$('result').textContent=e.message;throw e;}finally{setTimeout(()=>state.scanHold=false,2200);$('code').value='';}});}
 $('scanForm').onsubmit=e=>{e.preventDefault();if(!state.scanHold)scan($('code').value.trim());};
 $('undoForm').onsubmit=e=>{e.preventDefault();guarded(async()=>{state.undo=null;show('undoConfirm',false);const code=$('undoCode').value.trim(),d=await api('lookup',{code});$('undoDetails').textContent=d.esito==='TROVATO'?d.nome+' '+d.cognome+' · '+d.pax+' pax · Ticket '+d.ticket:labels[d.esito]||d.esito;if(d.esito==='TROVATO'){state.undo={code,...context()};show('undoConfirm');}});};
@@ -52,5 +112,5 @@ $('close').onclick=()=>guarded(async()=>{if(!confirm('Salvare il riepilogo di '+
 async function history(){const d=await api('history');$('historyContent').replaceChildren();d.history.forEach(r=>{const card=el('article',null,'history-item');card.append(el('h3',dateLabel(r.date)+' · '+r.corsa),el('p',r.port+' · '+r.operator+' · '+new Date(r.closedAt).toLocaleString('it-IT')),reportTable(r.stats));const b=el('button','Elimina riepilogo','ghost');b.onclick=()=>guarded(async()=>{if(!confirm('Eliminare questo riepilogo? I check-in non saranno cancellati.'))return;const res=await api('deleteHistory',{id:r.id});if(res.esito!=='OK')throw Error(res.esito);await history();});card.append(b);$('historyContent').append(card);});if(!d.history.length)$('historyContent').append(el('p','Nessun imbarco nello storico JBM.'));}
 $('historySetup').onclick=()=>guarded(async()=>{show('setup',false);await view('history');});
 $('historyBack').onclick=()=>guarded(async()=>{show('history',false);if(state.port)await view('scan');else show('setup');});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();else if(state.token&&state.port)refresh().catch(e=>notify(e.message));});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera().catch(e=>notify(cameraMessage(e)));else if(state.token&&state.port)refresh().catch(e=>notify(e.message));});
 window.addEventListener('offline',()=>notify('Connessione assente. Nessun imbarco può essere confermato.'));
