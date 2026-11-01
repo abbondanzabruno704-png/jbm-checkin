@@ -39,6 +39,19 @@ async function api(action,params={}){
 }
 async function guarded(fn){if(state.busy){notify('Attendi il completamento dell’operazione in corso.');return;}state.busy=true;try{await fn();}catch(e){notify(e?.message||String(e));}finally{state.busy=false;}}
 function sound(kind){try{if($('soundEnabled').checked){audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume();const o=audio.createOscillator(),g=audio.createGain();o.connect(g);g.connect(audio.destination);const now=audio.currentTime;g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(.25,now+.015);g.gain.setValueAtTime(.25,now+.22);g.gain.linearRampToValueAtTime(0,now+.30);o.frequency.value=kind==='VALIDO'?1100:kind==='GIA_USATO'?650:250;o.start(now);o.stop(now+.31);}if($('vibrationEnabled').checked&&navigator.vibrate)navigator.vibrate(kind==='VALIDO'?60:[80,60,80]);}catch(e){}}
+// Short acquisition beep, distinct from the later server outcome signal.
+function readSound(){
+ if(!$('soundEnabled').checked)return;
+ try{
+  audio=audio||new(window.AudioContext||window.webkitAudioContext)();
+  audio.resume();
+  const o=audio.createOscillator(),g=audio.createGain(),now=audio.currentTime;
+  o.connect(g);g.connect(audio.destination);o.frequency.value=1600;
+  g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(.20,now+.005);
+  g.gain.exponentialRampToValueAtTime(.001,now+.075);
+  o.onended=()=>{o.disconnect();g.disconnect();};o.start(now);o.stop(now+.08);
+ }catch(e){}
+}
 function dismiss(){for(const id of ['menuDialog','panelDialog'])if($(id).open)$(id).close();state.view='scan';$('menuButton').setAttribute('aria-expanded','false');}
 function result(kind,title,details=''){show('result');$('result').className=kind;$('result').replaceChildren(el('strong',title),el('span',details));}
 function el(tag,text,className){const e=document.createElement(tag);if(text!=null)e.textContent=text;if(className)e.className=className;return e;}
@@ -90,8 +103,29 @@ setInterval(()=>{if(state.token&&state.port&&!state.busy&&!document.hidden&&!$('
 function renderStats(){$('stats').replaceChildren();for(const [k,label] of Object.entries({totale:'Prenotati',imbarcati:'Imbarcati',mancanti:'Mancanti',annullati:'Annullati'})){const b=el('button',null,'stat');b.append(el('strong',state.snapshot[k]),el('span',label));b.onclick=()=>guarded(async()=>{$('listState').value=k==='totale'?'all':k;await view(k==='totale'?'report':'list');});$('stats').append(b);}}
 function renderList(){if(!state.snapshot)return;const q=$('search').value.trim().toLowerCase(),filter=$('listState').value;const rows=(state.snapshot.lista||[]).filter(r=>(filter==='all'||r.state===filter)&&[r.id,r.nome,r.cognome].join(' ').toLowerCase().includes(q));$('passengers').replaceChildren();rows.forEach(r=>{const card=el('div',null,'passenger'),left=el('div');left.append(el('strong',r.nome+' '+r.cognome),el('p','Ticket '+r.id+' · '+r.pax+' pax'));left.append(el('p','Adulti '+r.counts[0]+' · Bambini '+r.counts[1]+' · Infant '+r.counts[2]),el('p',(r.port||state.port)+(r.time?' · '+new Date(r.time).toLocaleString('it-IT'):'')+(r.operator?' · '+r.operator:'')));if(r.telefono){const phone=el('a',r.telefono);phone.href='tel:'+r.telefono.replace(/[^+0-9]/g,'');left.append(phone);}card.append(left,el('span',r.state,'state'));$('passengers').append(card);});if(!rows.length)$('passengers').append(el('p','Nessun passeggero trovato.'));}
 $('search').oninput=renderList;$('listState').onchange=renderList;
-function reportTable(stats){const table=el('table'),head=el('tr');['Stato','Adulti','Bambini','Infant','Totale'].forEach(s=>head.append(el('th',s)));table.append(head);for(const k of ['totale','imbarcati','mancanti','annullati']){const tr=el('tr');[k,...stats.counts[k],stats[k]].forEach(s=>tr.append(el('td',s)));table.append(tr);}return table;}
-function renderReport(){if(!state.snapshot)return;$('reportContent').replaceChildren(el('p',dateLabel(state.trip.date)+' · '+state.trip.corsa+' · '+state.port),reportTable(state.snapshot));for(const [op,pax]of Object.entries(state.snapshot.operatori))$('reportContent').append(el('p',op+': '+pax+' pax'));}
+function reportTable(stats){const table=el('table'),head=el('tr');['Stato','Adulti','Bambini','Infant','Totale'].forEach(s=>head.append(el('th',s)));table.append(head);for(const k of ['totale','imbarcati','mancanti','annullati']){const tr=el('tr');[{totale:'Prenotati',imbarcati:'Imbarcati',mancanti:'Mancanti',annullati:'Annullati'}[k],...stats.counts[k],stats[k]].forEach(s=>tr.append(el('td',s)));table.append(tr);}return table;}
+function reportMetrics(stats){
+ const grid=el('div',null,'report-metrics');
+ for(const [key,label] of Object.entries({totale:'Prenotati',imbarcati:'Imbarcati',mancanti:'Mancanti',annullati:'Annullati'})){
+  const card=el('div',null,'report-metric metric-'+key);
+  card.append(el('span',label),el('strong',stats[key]??0));grid.append(card);
+ }
+ return grid;
+}
+function reportHeading(date,corsa,port){
+ const head=el('div',null,'report-heading');
+ head.append(el('span',dateLabel(date),'report-date'),el('h3',corsa),el('p','Porto · '+port));return head;
+}
+function renderReport(){
+ if(!state.snapshot)return;
+ const root=$('reportContent');root.replaceChildren(reportHeading(state.trip.date,state.trip.corsa,state.port),reportMetrics(state.snapshot));
+ const breakdown=el('section',null,'report-section');breakdown.append(el('h3','Composizione passeggeri'),reportTable(state.snapshot));root.append(breakdown);
+ const operators=el('section',null,'report-section');operators.append(el('h3','Imbarcati per operatore'));
+ const entries=Object.entries(state.snapshot.operatori||{});
+ for(const [op,pax] of entries){const row=el('div',null,'operator-row');row.append(el('span',op),el('strong',pax+' pax'));operators.append(row);}
+ if(!entries.length)operators.append(el('p','Nessun imbarco registrato.','report-muted'));
+ root.append(operators,el('p','Riepilogo del porto selezionato · '+$('freshness').textContent,'report-muted'));
+}
 $('print').onclick=()=>window.print();
 // Camera patch 1.1: visible container before construction and serialized lifecycle.
 let cameraQueue=Promise.resolve(),cameraGeneration=0,torch=false;
@@ -161,7 +195,7 @@ function scan(code,manual=false){
  const key=JSON.stringify(context())+'|'+code;
  if(!manual&&state.lastCode===key&&Date.now()-state.lastAt<2500)return;
  unlockAudio();return guarded(async()=>{
-  state.scanHold=true;state.revision++;dismiss();result('pending','VERIFICA IN CORSO…','Attendi la conferma del server.');
+  state.scanHold=true;readSound();state.revision++;dismiss();result('pending','VERIFICA IN CORSO…','Attendi la conferma del server.');
   try{
    if(state.uncertain.has(key)){
     const status=await api('lookup',{code});
@@ -222,7 +256,31 @@ $('undoConfirm').onclick=()=>guarded(async()=>{
  try{await resumeAfterSbarco(wasOn);}catch(e){notify('Sbarco confermato. '+cameraMessage(e)+' Premi Avvia fotocamera per riprovare.');}
 });
 $('close').onclick=()=>guarded(async()=>{if(!state.port)throw Error('Nessun imbarco aperto.');if(!confirm('Salvare il riepilogo di '+state.port+' e terminare questa postazione?'))return;const d=await api('close',{requestId:state.closeId});if(d.esito!=='OK')throw Error(d.esito);dismiss();state.revision++;await stopCamera();state.trip=null;state.port='';state.snapshot=null;show('operation',false);show('setup');notify('Riepilogo salvato nello storico.');await loadTrips();});
-async function history(){const d=await api('history');$('historyContent').replaceChildren();d.history.forEach(r=>{const card=el('article',null,'history-item');card.append(el('h3',dateLabel(r.date)+' · '+r.corsa),el('p',r.port+' · '+r.operator+' · '+new Date(r.closedAt).toLocaleString('it-IT')),reportTable(r.stats));const b=el('button','Elimina riepilogo','ghost');b.onclick=()=>guarded(async()=>{if(!confirm('Eliminare questo riepilogo? I check-in non saranno cancellati.'))return;const res=await api('deleteHistory',{id:r.id});if(res.esito!=='OK')throw Error(res.esito);await history();});card.append(b);$('historyContent').append(card);});if(!d.history.length)$('historyContent').append(el('p','Nessun imbarco nello storico JBM.'));}
+let historyRows=[];
+function renderHistory(){
+ const query=$('historySearch').value.trim().toLocaleLowerCase('it-IT');
+ const rows=historyRows.filter(r=>[dateLabel(r.date),r.corsa,r.port,r.operator].join(' ').toLocaleLowerCase('it-IT').includes(query));
+ $('historyCount').textContent=rows.length+' riepiloghi'+(query?' trovati':' salvati');
+ const root=$('historyContent');root.replaceChildren();
+ for(const r of rows){
+  const card=el('article',null,'history-card');card.append(reportHeading(r.date,r.corsa,r.port));
+  const total=el('div',null,'history-total');total.append(el('span','Imbarcati'),el('strong',(r.stats.imbarcati??0)+' pax'));card.append(total);
+  card.append(el('p','Operatore · '+r.operator+' · Chiusura '+new Date(r.closedAt).toLocaleString('it-IT'),'report-muted'));
+  const detail=el('details',null,'history-detail');detail.append(el('summary','Dettagli e statistiche'),reportMetrics(r.stats),reportTable(r.stats));
+  const b=el('button','Elimina riepilogo','history-delete');b.type='button';
+  b.onclick=()=>guarded(async()=>{
+   if(!confirm('Eliminare questo riepilogo? I check-in non saranno cancellati.'))return;
+   const res=await api('deleteHistory',{id:r.id});if(res.esito!=='OK')throw Error(res.esito);await history();
+  });detail.append(b);card.append(detail);root.append(card);
+ }
+ if(!rows.length)root.append(el('p',query?'Nessun riepilogo corrisponde alla ricerca.':'Nessun imbarco salvato nello storico.','report-empty'));
+}
+async function history(){
+ $('historyCount').textContent='Caricamento storico…';
+ try{const d=await api('history');historyRows=d.history;renderHistory();}
+ catch(e){$('historyCount').textContent='Storico non aggiornato';throw e;}
+}
+$('historySearch').oninput=renderHistory;
 $('historySetup').onclick=()=>guarded(()=>view('history'));
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera().catch(e=>notify(cameraMessage(e)));else if(state.token&&state.port)refresh().catch(e=>notify(e.message));});
 window.addEventListener('offline',()=>notify('Connessione assente. Nessun imbarco può essere confermato.'));
