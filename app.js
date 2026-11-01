@@ -51,7 +51,7 @@ $('logout').onclick=()=>guarded(async()=>{try{await api('logout');}finally{await
 async function changeContext(onlyPort=false){dismiss();state.revision++;await stopCamera();state.snapshot=null;show('operation',false);show('setup');if(onlyPort){state.port='';$('port').focus();}else{state.trip=null;state.port='';await loadTrips();}}
 async function view(name){
   dismiss();state.view=name;if(name==='scan')return;
-  const titles={manual:'Inserimento manuale',list:'Passeggeri',report:'Riepilogo e statistiche',history:'Storico ultime 50 corse',undo:'Annulla Check-In',lookup:'Ricerca biglietto',settings:'Impostazioni'};
+  const titles={manual:'Inserimento manuale',list:'Passeggeri',report:'Riepilogo e statistiche',history:'Storico ultime 50 corse',undo:'Sbarco',lookup:'Ricerca biglietto',settings:'Impostazioni'};
   document.querySelectorAll('.view').forEach(e=>e.hidden=e.id!==name);$('panelTitle').textContent=titles[name]||name;$('panelDialog').showModal();
   if(name==='history')await history();
   if(name==='list'){await refresh(true);renderList();}
@@ -74,6 +74,7 @@ document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>guarded(asyn
  await view(a);
 }));
 $('manualButton').onclick=()=>guarded(()=>view('manual'));
+$('sbarcoButton').onclick=()=>guarded(()=>view('undo'));
 $('operatorChange').onclick=()=>{if(confirm('Terminare la sessione per cambiare operatore?'))$('logout').click();};
 $('resumeCamera').onclick=()=>guarded(async()=>{if(!state.port)throw Error('Apri prima una corsa.');dismiss();if(!state.cameraOn)await startCamera();});
 let refreshTask=null,refreshSequence=0;

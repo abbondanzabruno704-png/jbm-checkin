@@ -13,3 +13,8 @@ header #environment{font-size:10px;line-height:1.2;letter-spacing:0;margin-top:4
 header #environment[data-status="online"]{color:#83e8bd}
 header #environment[data-status="offline"],header #environment[data-status="error"]{color:#ffb2b2}
 @media(max-height:650px){header #environment{font-size:9px;margin-top:2px}header .header-info>strong{font-size:13px}}
+
+/* Due accessi rapidi di identiche dimensioni, sotto l’esito. */
+.scan-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;flex:none}
+.scan-actions>button{width:100%;min-width:0;min-height:44px;font-size:13px;line-height:1.2;padding:8px 6px}
+.scan-actions #manualButton{min-height:44px}
