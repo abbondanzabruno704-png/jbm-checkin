@@ -6,22 +6,39 @@ let noticeTimer,audio;
 function notify(message){$('notice').textContent=message;show('notice');clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>show('notice',false),7000);}
 function dateLabel(v){return /^\d{4}-\d{2}-\d{2}$/.test(v)?v.split('-').reverse().join('/'):v;}
 function context(){return {date:state.trip?.date,corsa:state.trip?.corsa,port:state.port};}
+// Server status uses actual API responses; no additional requests or write retries.
+let serverSequence=0,serverLastReply=0,serverMode='unknown';
+function serverStatus(mode,message){
+  serverMode=mode;const badge=$('environment');if(!badge)return;
+  badge.hidden=false;badge.dataset.status=mode;badge.textContent='● '+message;
+  badge.title=serverLastReply?'Ultima risposta: '+new Date(serverLastReply).toLocaleTimeString('it-IT'):'Nessuna risposta ricevuta in questa sessione';
+}
+function serverFreshness(){
+  if(navigator.onLine===false){serverStatus('offline','Connessione assente');return;}
+  if(serverMode==='online'&&Date.now()-serverLastReply>45000)serverStatus('unknown','Server: da verificare');
+}
 async function api(action,params={}){
   const url=window.JBM_CONFIG?.apiUrl||'';
   if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(url))throw Error('Backend di test non configurato. Impostare config.js dopo aver creato il nuovo progetto Apps Script.');
+  const request=++serverSequence;let replied=false;
+  if(!serverLastReply)serverStatus('pending','Server: connessione…');
+  const slow=setTimeout(()=>{if(request===serverSequence)serverStatus('pending','Server: risposta lenta');},8000);
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),30000);
   try{
     const response=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,token:state.token,...context(),...params}),redirect:'follow',signal:controller.signal,credentials:'omit'});
     if(!response.ok)throw Error('Risposta HTTP '+response.status);
     const d=await response.json();
+    if(!d||typeof d.esito!=='string')throw Error('Risposta del server non valida.');
+    replied=true;
+    if(request===serverSequence){serverLastReply=Date.now();serverStatus(d.esito==='ERRORE'?'error':d.esito==='OCCUPATO'||d.esito==='ATTENDI'?'pending':'online',d.esito==='ERRORE'?'Server: errore':d.esito==='OCCUPATO'||d.esito==='ATTENDI'?'Server: occupato':'Server: online');}
     if(d.esito==='SESSIONE_SCADUTA'){await reset();throw Error('Sessione scaduta. Accedi nuovamente.');}
     if(['ERRORE','OCCUPATO','ATTENDI','ACCESSO_NEGATO'].includes(d.esito))throw Error(d.message||d.esito);
     return d;
-  }catch(e){if(e.name==='AbortError'||e instanceof TypeError)throw Error('Risposta non ricevuta. L’operazione potrebbe essere stata registrata: aggiorna i dati prima di riprovare.');throw e;}
-  finally{clearTimeout(timeout);}
+  }catch(e){if(!replied&&request===serverSequence)serverStatus('offline',navigator.onLine===false?'Connessione assente':'Server: non raggiungibile');if(e.name==='AbortError'||e instanceof TypeError)throw Error('Risposta non ricevuta. L’operazione potrebbe essere stata registrata: aggiorna i dati prima di riprovare.');throw e;}
+  finally{clearTimeout(timeout);clearTimeout(slow);}
 }
 async function guarded(fn){if(state.busy){notify('Attendi il completamento dell’operazione in corso.');return;}state.busy=true;try{await fn();}catch(e){notify(e?.message||String(e));}finally{state.busy=false;}}
-function sound(kind){try{if($('soundEnabled').checked){audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume();const o=audio.createOscillator(),g=audio.createGain();o.connect(g);g.connect(audio.destination);g.gain.value=.08;o.frequency.value=kind==='VALIDO'?1100:kind==='GIA_USATO'?650:250;o.start();o.stop(audio.currentTime+.2);}if($('vibrationEnabled').checked&&navigator.vibrate)navigator.vibrate(kind==='VALIDO'?60:[80,60,80]);}catch(e){}}
+function sound(kind){try{if($('soundEnabled').checked){audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume();const o=audio.createOscillator(),g=audio.createGain();o.connect(g);g.connect(audio.destination);const now=audio.currentTime;g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(.25,now+.015);g.gain.setValueAtTime(.25,now+.22);g.gain.linearRampToValueAtTime(0,now+.30);o.frequency.value=kind==='VALIDO'?1100:kind==='GIA_USATO'?650:250;o.start(now);o.stop(now+.31);}if($('vibrationEnabled').checked&&navigator.vibrate)navigator.vibrate(kind==='VALIDO'?60:[80,60,80]);}catch(e){}}
 function dismiss(){for(const id of ['menuDialog','panelDialog'])if($(id).open)$(id).close();state.view='scan';$('menuButton').setAttribute('aria-expanded','false');}
 function result(kind,title,details=''){show('result');$('result').className=kind;$('result').replaceChildren(el('strong',title),el('span',details));}
 function el(tag,text,className){const e=document.createElement(tag);if(text!=null)e.textContent=text;if(className)e.className=className;return e;}
@@ -171,7 +188,11 @@ window.addEventListener('offline',()=>notify('Connessione assente. Nessun imbarc
 
 function viewport(){document.documentElement.style.setProperty('--app-height',Math.round(window.visualViewport?.height||innerHeight)+'px');}
 window.visualViewport?.addEventListener('resize',viewport);window.addEventListener('resize',viewport);viewport();
-$('environment').textContent='';show('environment',false);
+serverStatus('unknown','Server: da verificare');serverFreshness();
+setInterval(serverFreshness,10000);
+window.addEventListener('offline',()=>{serverSequence++;serverStatus('offline','Connessione assente');});
+window.addEventListener('online',()=>serverStatus('unknown','Server: da verificare'));
+document.addEventListener('visibilitychange',serverFreshness);
 
 // Zebra/DataWedge keyboard output: suffix Enter, outside editable controls.
 let wedge='',wedgeAt=0;
