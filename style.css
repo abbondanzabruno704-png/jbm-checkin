@@ -18,3 +18,18 @@ header #environment[data-status="offline"],header #environment[data-status="erro
 .scan-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;flex:none}
 .scan-actions>button{width:100%;min-width:0;min-height:44px;font-size:13px;line-height:1.2;padding:8px 6px}
 .scan-actions #manualButton{min-height:44px}
+
+/* Compact server badge: text and colour together convey the last known status. */
+header #environment{
+ display:table;width:fit-content;max-width:100%;padding:3px 7px;
+ border:1px solid var(--server-colour);border-radius:5px;
+ --server-colour:#f4ce80;--server-bg:#493c21;
+ color:var(--server-colour);background:var(--server-bg);
+ animation:server-pulse 2.4s ease-in-out infinite;
+}
+header #environment[data-status="online"]{--server-colour:#83e8bd;--server-bg:#16473f;color:var(--server-colour)}
+header #environment[data-status="offline"],header #environment[data-status="error"]{--server-colour:#ffb2b2;--server-bg:#592f35;color:var(--server-colour)}
+header #environment[data-status="pending"],header #environment[data-status="unknown"]{--server-colour:#f4ce80;--server-bg:#493c21}
+@keyframes server-pulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 2px var(--server-colour)}}
+@media(max-height:650px){header #environment{padding:2px 5px}}
+@media(prefers-reduced-motion:reduce){header #environment{animation:none}}

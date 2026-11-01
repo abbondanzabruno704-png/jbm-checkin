@@ -2,7 +2,7 @@
 const $=id=>document.getElementById(id),show=(id,yes=true)=>$(id).hidden=!yes;
 const state={token:'',operator:'',trip:null,port:'',snapshot:null,view:'scan',busy:false,camera:null,cameraOn:false,scanHold:false,undo:null,closeId:'',refreshing:false,revision:0,lastCode:'',lastAt:0,uncertain:new Set()};
 const labels={VALIDO:'IMBARCO REGISTRATO',GIA_USATO:'GIÀ IMBARCATO IN QUESTO PORTO',ANNULLATO:'BIGLIETTO ANNULLATO',ALTRA_DATA:'BIGLIETTO DI ALTRA DATA',ALTRA_CORSA:'BIGLIETTO DI ALTRA CORSA',NON_TROVATO:'BIGLIETTO NON TROVATO',PORTO_NON_PREVISTO:'PORTO NON PREVISTO O AMBIGUO',DUPLICATO_ARCHIVIO:'CODICE DUPLICATO IN ARCHIVIO',DATI_NON_VALIDI:'DATI BIGLIETTO DA VERIFICARE',NON_IMBARCATO:'CHECK-IN NON PRESENTE',CHECKIN_ANNULLATO:'CHECK-IN ANNULLATO'};
-let noticeTimer,audio;
+let noticeTimer,audio,boardingResumeAt=0;
 function notify(message){$('notice').textContent=message;show('notice');clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>show('notice',false),7000);}
 function dateLabel(v){return /^\d{4}-\d{2}-\d{2}$/.test(v)?v.split('-').reverse().join('/'):v;}
 function context(){return {date:state.trip?.date,corsa:state.trip?.corsa,port:state.port};}
@@ -157,7 +157,7 @@ $('torch').onclick=()=>guarded(()=>cameraTask(async()=>{if(!state.cameraOn)retur
 $('settingsTorch').onclick=()=>$('torch').click();
 function unlockAudio(){try{audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume();}catch(e){}}
 function scan(code,manual=false){
- code=String(code||'').trim();if(!code||state.busy||state.scanHold)return;
+ code=String(code||'').trim();if(!code||state.busy||state.scanHold||Date.now()<boardingResumeAt)return;
  const key=JSON.stringify(context())+'|'+code;
  if(!manual&&state.lastCode===key&&Date.now()-state.lastAt<2500)return;
  unlockAudio();return guarded(async()=>{
@@ -180,7 +180,47 @@ function scan(code,manual=false){
 $('scanForm').onsubmit=e=>{e.preventDefault();scan($('code').value,true);};
 $('lookupForm').onsubmit=e=>{e.preventDefault();guarded(async()=>{const d=await api('lookup',{code:$('lookupCode').value.trim()});$('lookupDetails').textContent=(d.esito==='TROVATO'?'GIÀ IMBARCATO':labels[d.esito]||d.esito)+(d.ticket?' · '+d.nome+' '+d.cognome+' · '+d.pax+' pax · '+d.port:'');});};
 $('undoForm').onsubmit=e=>{e.preventDefault();guarded(async()=>{state.undo=null;show('undoConfirm',false);const code=$('undoCode').value.trim(),d=await api('lookup',{code});$('undoDetails').textContent=d.esito==='TROVATO'?d.nome+' '+d.cognome+' · '+d.pax+' pax · Ticket '+d.ticket:labels[d.esito]||d.esito;if(d.esito==='TROVATO'){state.undo={code,...context()};show('undoConfirm');}});};
-$('undoConfirm').onclick=()=>guarded(async()=>{if(!state.undo||!confirm('Annullare il check-in nel porto '+state.port+'?'))return;state.revision++;const d=await api('undo',state.undo);notify(labels[d.esito]||d.esito);state.undo=null;show('undoConfirm',false);$('undoDetails').replaceChildren();await refresh();});
+// Keep the healthy camera stream alive while leaving the sbarco panel.
+async function resumeAfterSbarco(wasOn){
+ if(!wasOn||document.hidden||!state.token||!state.port)return;
+ const video=$('reader').querySelector('video');
+ const tracks=video?.srcObject?.getVideoTracks?.();
+ if(state.cameraOn&&tracks?.some(t=>t.readyState==='ended'))await stopCamera();
+ if(!state.cameraOn)await startCamera();
+ else if(video?.paused)await video.play();
+}
+$('undoConfirm').onclick=()=>guarded(async()=>{
+ if(!state.undo||!confirm('Confermare lo sbarco nel porto '+state.port+'?'))return;
+ const request={...state.undo},selected=JSON.stringify(context()),wasOn=state.cameraOn;
+ state.revision++;
+ show('undoConfirm',false);
+ $('undoDetails').textContent='Sbarco in corso… Attendi la conferma del server.';
+ let d;
+ try{d=await api('undo',request);}
+ catch(e){
+  state.undo=null;
+  $('undoDetails').textContent='ESITO SBARCO DA VERIFICARE. '+e.message+' Cerca nuovamente il biglietto prima di riprovare.';
+  result('warn','ESITO SBARCO DA VERIFICARE','Risposta non ricevuta: verifica il biglietto prima di riprovare.');
+  throw e;
+ }
+ state.undo=null;
+ if(selected!==JSON.stringify(context())||!state.token)return;
+ if(d.esito!=='CHECKIN_ANNULLATO'){
+  $('undoDetails').textContent=labels[d.esito]||d.esito;
+  result('error','SBARCO NON CONFERMATO',labels[d.esito]||d.esito);
+  sound('ERRORE');return;
+ }
+ // Leave three seconds to remove the ticket before boarding decoding resumes.
+ boardingResumeAt=Date.now()+3000;
+ state.lastCode=selected+'|'+request.code;state.lastAt=boardingResumeAt;
+ state.uncertain.delete(state.lastCode);
+ $('undoCode').value='';$('undoDetails').replaceChildren();
+ dismiss();
+ result('success','SBARCO CONFERMATO',(d.nome||'')+' '+(d.cognome||'')+' · '+d.pax+' pax · '+(d.port||request.port)+' · Rimuovi il QR dalla fotocamera.');
+ sound('VALIDO');
+ if(d.snapshot)applySnapshot(d.snapshot);else refresh().catch(()=>{});
+ try{await resumeAfterSbarco(wasOn);}catch(e){notify('Sbarco confermato. '+cameraMessage(e)+' Premi Avvia fotocamera per riprovare.');}
+});
 $('close').onclick=()=>guarded(async()=>{if(!state.port)throw Error('Nessun imbarco aperto.');if(!confirm('Salvare il riepilogo di '+state.port+' e terminare questa postazione?'))return;const d=await api('close',{requestId:state.closeId});if(d.esito!=='OK')throw Error(d.esito);dismiss();state.revision++;await stopCamera();state.trip=null;state.port='';state.snapshot=null;show('operation',false);show('setup');notify('Riepilogo salvato nello storico.');await loadTrips();});
 async function history(){const d=await api('history');$('historyContent').replaceChildren();d.history.forEach(r=>{const card=el('article',null,'history-item');card.append(el('h3',dateLabel(r.date)+' · '+r.corsa),el('p',r.port+' · '+r.operator+' · '+new Date(r.closedAt).toLocaleString('it-IT')),reportTable(r.stats));const b=el('button','Elimina riepilogo','ghost');b.onclick=()=>guarded(async()=>{if(!confirm('Eliminare questo riepilogo? I check-in non saranno cancellati.'))return;const res=await api('deleteHistory',{id:r.id});if(res.esito!=='OK')throw Error(res.esito);await history();});card.append(b);$('historyContent').append(card);});if(!d.history.length)$('historyContent').append(el('p','Nessun imbarco nello storico JBM.'));}
 $('historySetup').onclick=()=>guarded(()=>view('history'));
